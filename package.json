@@ -5,7 +5,8 @@
   "description": "Sistema online AUREA+ - vendas, estoque, caixa e usuarios",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "stals": "node server.js"
   },
   "engines": {
     "node": ">=20"
