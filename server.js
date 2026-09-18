@@ -213,7 +213,7 @@ app.post('/api/sales', auth, asyncRoute(async(req,res)=>{
       const qty=positiveInt(item.quantity), variantId=positiveInt(item.variantId);
       if(!qty||!variantId) throw Object.assign(new Error('Item inválido'),{status:400});
       const vr=await client.query(`
-        SELECT v.id,v.stock,p.price,p.cost,p.name,v.size,v.color
+        SELECT v.id,v.stock,p.price,p.cost,p.name,p.type,v.size,v.color
         FROM product_variants v JOIN products p ON p.id=v.product_id
         WHERE v.id=$1 AND p.active=TRUE FOR UPDATE`,[variantId]);
       if(!vr.rows[0]) throw Object.assign(new Error('Produto não encontrado'),{status:404});
@@ -232,6 +232,21 @@ app.post('/api/sales', auth, asyncRoute(async(req,res)=>{
       await client.query("INSERT INTO stock_movements(variant_id,user_id,movement_type,quantity,reason,reference_type,reference_id) VALUES($1,$2,'venda',$3,$4,'sale',$5)",[it.id,req.user.id,it.qty,'Venda #'+sr.rows[0].id,sr.rows[0].id]);
     }
     await client.query("INSERT INTO cash_transactions(user_id,type,category,description,amount,sale_id) VALUES($1,'entrada','vendas',$2,$3,$4)",[req.user.id,'Venda #'+sr.rows[0].id,total,sr.rows[0].id]);
+
+    const chinelaQty=locked.filter(it=>it.type==='chinela').reduce((sum,it)=>sum+it.qty,0);
+    if(chinelaQty>0){
+      const merchandiseCost=Number((chinelaQty*33.33).toFixed(2));
+      const packagingCost=Number((chinelaQty*1.52).toFixed(2));
+      await client.query(
+        "INSERT INTO cash_transactions(user_id,type,category,description,amount,sale_id) VALUES($1,'saida','mercadoria',$2,$3,$4)",
+        [req.user.id,'Custo automático de chinelas + frete - Venda #'+sr.rows[0].id+' ('+chinelaQty+' par(es))',merchandiseCost,sr.rows[0].id]
+      );
+      await client.query(
+        "INSERT INTO cash_transactions(user_id,type,category,description,amount,sale_id) VALUES($1,'saida','despesas',$2,$3,$4)",
+        [req.user.id,'Custo automático de embalagens - Venda #'+sr.rows[0].id+' ('+chinelaQty+' par(es))',packagingCost,sr.rows[0].id]
+      );
+    }
+
     await client.query('COMMIT'); res.status(201).json(sr.rows[0]);
   }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 }));
