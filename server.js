@@ -251,6 +251,27 @@ app.post('/api/sales', auth, asyncRoute(async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
 }));
 
+app.delete('/api/sales/:id', auth, roles('administrador'), asyncRoute(async(req,res)=>{
+  const saleId=positiveInt(req.params.id);
+  if(!saleId) return res.status(400).json({error:'Venda inválida'});
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const sale=await client.query('SELECT id FROM sales WHERE id=$1 FOR UPDATE',[saleId]);
+    if(!sale.rows[0]) throw Object.assign(new Error('Venda não encontrada'),{status:404});
+    const items=await client.query('SELECT variant_id,quantity FROM sale_items WHERE sale_id=$1',[saleId]);
+    for(const it of items.rows){
+      await client.query('UPDATE product_variants SET stock=stock+$1,updated_at=NOW() WHERE id=$2',[it.quantity,it.variant_id]);
+    }
+    await client.query("DELETE FROM stock_movements WHERE reference_type='sale' AND reference_id=$1",[saleId]);
+    await client.query('DELETE FROM cash_transactions WHERE sale_id=$1',[saleId]);
+    await client.query('DELETE FROM sale_items WHERE sale_id=$1',[saleId]);
+    await client.query('DELETE FROM sales WHERE id=$1',[saleId]);
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');throw e}finally{client.release()}
+}));
+
 app.get('/api/purchases', auth, asyncRoute(async(req,res)=>{
   const {rows}=await pool.query(`
     SELECT pu.*,s.name AS supplier_name,u.name AS user_name,
@@ -320,6 +341,17 @@ app.post('/api/cash/transactions', auth, roles('administrador','caixa'), asyncRo
   const {type,category,description}=req.body, amount=n(req.body.amount);
   if(!['entrada','saida'].includes(type)||!['emergencias','despesas','mercadoria','prolabore'].includes(category)||!description||amount<=0) return res.status(400).json({error:'Dados inválidos'});
   const {rows}=await pool.query('INSERT INTO cash_transactions(user_id,type,category,description,amount) VALUES($1,$2,$3,$4,$5) RETURNING *',[req.user.id,type,category,description,amount]); res.status(201).json(rows[0]);
+}));
+app.delete('/api/cash/transactions/:id', auth, roles('administrador','caixa'), asyncRoute(async(req,res)=>{
+  const id=positiveInt(req.params.id);
+  if(!id) return res.status(400).json({error:'Lançamento inválido'});
+  const {rows}=await pool.query('SELECT id,sale_id,purchase_id FROM cash_transactions WHERE id=$1',[id]);
+  const tx=rows[0];
+  if(!tx) return res.status(404).json({error:'Lançamento não encontrado'});
+  if(tx.sale_id) return res.status(400).json({error:'Este lançamento pertence a uma venda. Exclua a venda para corrigir estoque e caixa juntos.'});
+  if(tx.purchase_id) return res.status(400).json({error:'Este lançamento pertence a uma compra e não pode ser excluído isoladamente.'});
+  await pool.query('DELETE FROM cash_transactions WHERE id=$1',[id]);
+  res.json({ok:true});
 }));
 
 app.get('/api/users', auth, roles('administrador'), asyncRoute(async(req,res)=>{
